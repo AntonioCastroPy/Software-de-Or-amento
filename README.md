@@ -25,7 +25,7 @@ Seeds de usuários:
 - `/planejamentos/:id` — detalhe com modelos
 - `/planejamentos/:id/modelos/:modeloId/editar` — editor de estrutura do modelo
 - `/planejamentos/:id/modelos/:modeloId/preencher` — preenchimento mensal
-- `/parametros?tab=usuarios|acessos|cc|vinculos` — módulo Parâmetros (RBAC)
+- `/parametros (painel focado em Usuários via modal único)` — módulo Parâmetros (RBAC)
 
 ## Controle de Acesso (RBAC + escopo por CC)
 
@@ -107,3 +107,15 @@ Seeds de usuários:
 4. Gestor envia `ABERTO -> EM_REVISAO`; ao tentar editar lançamentos após isso, backend retorna `403`.
 5. Usuário com CC não vinculado tenta acessar `/api/modelos/:id/valores?centroCustoId=...` e recebe `403`.
 6. Criar/editar/inativar usuário, alterar vínculos CC e editar lançamentos/modelos/linhas; validar registros em `/api/audit-log`.
+
+
+## Usuários (modal único)
+- Todas as operações de usuário acontecem em **Parâmetros > Usuários** via modal `Gerenciar`/`Novo usuário`.
+- Não existe exclusão física no fluxo de UI; a inativação é irreversível via `POST /api/users/:id/inactivate`.
+
+### Endpoints MVP de Usuários
+- `GET /api/users?query=&page=&pageSize=`
+- `POST /api/users`
+- `PUT /api/users/:id` (nome/cargo/CCs; email não altera no modal)
+- `POST /api/users/:id/inactivate`
+- `GET /api/cost-centers`

@@ -173,52 +173,106 @@ async function renderPreencher(planId, modeloId) {
 }
 
 function renderParametrosShell() {
-  const tab = new URLSearchParams(location.search).get('tab') || 'usuarios';
   app.innerHTML = `
-    <section class="page-header"><div><h1 class="page-title">Parâmetros</h1><div class="page-subtitle">Controle de acesso (RBAC + escopo por Centro de Custo)</div></div></section>
-    <div class="card"><div class="actions"><a href="/parametros?tab=usuarios" data-link><button ${tab==='usuarios'?'class="primary"':''}>Usuários</button></a><a href="/parametros?tab=acessos" data-link><button ${tab==='acessos'?'class="primary"':''}>Controles de Acessos</button></a><a href="/parametros?tab=cc" data-link><button ${tab==='cc'?'class="primary"':''}>Centros de Custo</button></a><a href="/parametros?tab=vinculos" data-link><button ${tab==='vinculos'?'class="primary"':''}>Vínculos Usuário x CC</button></a></div></div>
+    <section class="page-header"><div><h1 class="page-title">Parâmetros</h1><div class="page-subtitle">Gestão de usuários, cargos e escopo por Centro de Custo</div></div></section>
     <div id="paramContent"></div>`;
-  return tab;
 }
 
 async function renderUsuarios() {
-  const tab = renderParametrosShell(); if (tab !== 'usuarios') return;
-  const [usersRes, ccs] = await Promise.all([
-    api('/api/parametros/usuarios?page=1&pageSize=100'),
-    api('/api/centros-custo?page=1&pageSize=200').then(r=>r.items)
+  renderParametrosShell();
+  const [usersRes, ccsRes] = await Promise.all([
+    api('/api/users?page=1&pageSize=200'),
+    api('/api/cost-centers')
   ]);
   const items = usersRes.items;
-  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="table-toolbar"><input id="buscaUser" placeholder="Buscar usuários..."><div class="item-count">${items.length} usuários</div><button class="primary" id="novoUser">Novo</button></div><table class="table"><thead><tr><th>Nome</th><th>Email</th><th>Status</th><th>Ações</th></tr></thead><tbody id="userRows"></tbody></table></div>`;
+  const allCCs = ccsRes.items;
+
+  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="table-toolbar"><input id="buscaUser" placeholder="Buscar usuários..."><div class="item-count">${items.length} usuários</div><button class="primary" id="novoUser">Novo usuário</button></div><table class="table"><thead><tr><th>Nome</th><th>Email/Login</th><th>Cargo</th><th>Status</th><th>Ações</th></tr></thead><tbody id="userRows"></tbody></table></div>`;
+
   const renderRows = (q='') => {
     const rows = items.filter(u => !q || `${u.nome} ${u.email}`.toLowerCase().includes(q.toLowerCase()));
-    document.getElementById('userRows').innerHTML = rows.length ? rows.map(u => `<tr><td>${u.nome}</td><td>${u.email}</td><td>${u.ativo ? 'Ativo' : 'Inativo'}</td><td class="actions"><button data-edit="${u.id}">Editar</button>${u.ativo ? `<button class="destructive" data-inativar="${u.id}">Inativar</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="4">Sem usuários.</td></tr>';
-    document.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openUserForm(items.find(u => u.id === Number(btn.dataset.edit))));
-    document.querySelectorAll('[data-inativar]').forEach(btn => btn.onclick = async () => { if(confirm('Inativar usuário?')) { await api(`/api/parametros/usuarios/${btn.dataset.inativar}`, { method: 'DELETE' }); render(); }});
+    document.getElementById('userRows').innerHTML = rows.length ? rows.map(u => `<tr><td>${u.nome}</td><td>${u.email}</td><td>${u.role || '-'}</td><td>${u.status}</td><td class="actions">${u.status === 'ATIVO' ? `<button data-manage="${u.id}">Gerenciar</button>` : '<span class="muted">Sem ações</span>'}</td></tr>`).join('') : '<tr><td colspan="5">Sem usuários.</td></tr>';
+    document.querySelectorAll('[data-manage]').forEach(btn => btn.onclick = () => openUserModal(items.find(u => u.id === Number(btn.dataset.manage))));
   };
-  document.getElementById('buscaUser').oninput = (e) => renderRows(e.target.value);
-  renderRows();
-  document.getElementById('novoUser').onclick = () => openUserForm();
 
-  async function openUserForm(u) {
-    const currentLinks = u ? await api(`/api/parametros/usuarios/${u.id}/cost-centers`) : [];
-    const linkMap = Object.fromEntries(currentLinks.map(v => [v.costCenterId, v.linkType]));
-    openModal(`<form id="fUser" class="grid"><h3>${u?'Editar':'Novo'} Usuário</h3><label>Nome <input name="nome" value="${u?.nome||''}" required></label><label>Email <input name="email" value="${u?.email||''}" required></label><h4>Centros de Custo</h4><div class="grid">${ccs.map(c => `<label><input type="checkbox" name="cc" value="${c.id}" ${linkMap[c.id]?'checked':''}> ${c.nome} <select name="tipo-${c.id}"><option value="GESTOR_CC" ${linkMap[c.id]==='GESTOR_CC'?'selected':''}>GESTOR_CC</option><option value="OPERADOR_CC" ${linkMap[c.id]==='OPERADOR_CC'?'selected':''}>OPERADOR_CC</option><option value="LEITOR_CC" ${linkMap[c.id]==='LEITOR_CC'?'selected':''}>LEITOR_CC</option></select></label>`).join('')}</div><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div></form>`);
-    document.getElementById('cancel').onclick = closeModal;
-    document.getElementById('fUser').onsubmit = async (e) => {
-      e.preventDefault(); const fd = new FormData(e.target);
-      try {
-        let userId = u?.id;
-        if (u) await api(`/api/parametros/usuarios/${u.id}`, { method: 'PUT', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
-        else {
-          const created = await api('/api/parametros/usuarios', { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
-          userId = created.id;
+  document.getElementById('buscaUser').oninput = (e) => renderRows(e.target.value);
+  document.getElementById('novoUser').onclick = () => openUserModal();
+  renderRows();
+
+  function renderCcChecklist(selectedIds, role, filter='') {
+    const blocked = role === 'DIRETORIA';
+    const filtered = allCCs.filter(c => (`${c.code} ${c.name}`).toLowerCase().includes(filter.toLowerCase()));
+    return `<div class="grid">${filtered.map(c => `<label><input type="checkbox" name="cc" value="${c.id}" ${selectedIds.includes(c.id)?'checked':''} ${blocked?'disabled':''}> ${c.code} - ${c.name}</label>`).join('')}</div>`;
+  }
+
+  function openUserModal(u) {
+    const isEdit = !!u;
+    let role = u?.role || 'OPERADOR';
+    let selectedIds = [...(u?.costCenterIds || [])];
+    const disabled = u?.status === 'INATIVO';
+
+    const draw = (filter='') => {
+      openModal(`<form id="fUser" class="grid"><h3>${isEdit ? 'Gerenciar usuário' : 'Novo usuário'}</h3>
+        <label>Nome <input name="name" value="${u?.nome || ''}" ${disabled?'disabled':''} required></label>
+        <label>Email/Login <input name="email" value="${u?.email || ''}" ${isEdit ? 'disabled' : ''} ${disabled?'disabled':''} required></label>
+        <label>Cargo <select name="role" id="roleSel" ${disabled?'disabled':''}><option ${role==='OPERADOR'?'selected':''}>OPERADOR</option><option ${role==='GESTOR'?'selected':''}>GESTOR</option><option ${role==='DIRETORIA'?'selected':''}>DIRETORIA</option></select></label>
+        <label>Buscar Centro de Custo <input id="ccSearch" value="${filter}" ${role==='DIRETORIA' || disabled ? 'disabled' : ''}></label>
+        <div id="ccWrap">${renderCcChecklist(selectedIds, role, filter)}</div>
+        ${role==='DIRETORIA' ? '<small>Diretoria possui acesso global; vínculos de CC serão ignorados.</small>' : ''}
+        <div class="actions">
+          ${isEdit && !disabled ? '<button type="button" class="destructive" id="inativarUser">Inativar usuário</button>' : ''}
+          <button class="primary" ${disabled?'disabled':''}>Salvar</button>
+          <button type="button" id="cancel">Fechar</button>
+        </div><div id="err" class="error"></div></form>`);
+
+      document.getElementById('cancel').onclick = closeModal;
+      const roleSel = document.getElementById('roleSel');
+      if (roleSel) roleSel.onchange = () => {
+        role = roleSel.value;
+        if (role === 'DIRETORIA') selectedIds = [];
+        draw(document.getElementById('ccSearch')?.value || '');
+      };
+      const ccSearch = document.getElementById('ccSearch');
+      if (ccSearch) ccSearch.oninput = () => draw(ccSearch.value);
+      document.querySelectorAll('input[name="cc"]').forEach(chk => chk.onchange = () => {
+        const id = Number(chk.value);
+        if (chk.checked && !selectedIds.includes(id)) selectedIds.push(id);
+        if (!chk.checked) selectedIds = selectedIds.filter(x => x !== id);
+      });
+
+      const inativar = document.getElementById('inativarUser');
+      if (inativar) inativar.onclick = async () => {
+        if (!confirm('Confirma inativação irreversível / sem reativação deste usuário?')) return;
+        try {
+          await api(`/api/users/${u.id}/inactivate`, { method: 'POST' });
+          closeModal();
+          renderUsuarios();
+        } catch (err) { document.getElementById('err').textContent = err.message; }
+      };
+
+      document.getElementById('fUser').onsubmit = async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const payload = {
+          name: fd.get('name'),
+          role,
+          costCenterIds: role === 'DIRETORIA' ? [] : selectedIds
+        };
+        if (!isEdit) payload.email = fd.get('email');
+        if (role !== 'DIRETORIA' && payload.costCenterIds.length === 0) {
+          document.getElementById('err').textContent = 'Selecione ao menos 1 Centro de Custo para OPERADOR/GESTOR.';
+          return;
         }
-        const selected = fd.getAll('cc').map(v => Number(v));
-        const vinculos = selected.map(ccId => ({ costCenterId: ccId, linkType: fd.get(`tipo-${ccId}`) || 'LEITOR_CC' }));
-        if (userId) await api(`/api/parametros/usuarios/${userId}/cost-centers`, { method: 'POST', body: JSON.stringify({ vinculos }) });
-        closeModal(); render();
-      } catch (err) { document.getElementById('err').textContent = err.message; }
+        try {
+          if (isEdit) await api(`/api/users/${u.id}`, { method: 'PUT', body: JSON.stringify(payload) });
+          else await api('/api/users', { method: 'POST', body: JSON.stringify(payload) });
+          closeModal();
+          renderUsuarios();
+        } catch (err) { document.getElementById('err').textContent = err.message; }
+      };
     };
+
+    draw();
   }
 }
 
@@ -267,11 +321,6 @@ async function renderVinculos() {
 }
 
 async function renderParametros() {
-  const tab = new URLSearchParams(location.search).get('tab') || 'usuarios';
-  if (tab === 'usuarios') return renderUsuarios();
-  if (tab === 'acessos') return renderAcessos();
-  if (tab === 'cc') return renderCC();
-  if (tab === 'vinculos') return renderVinculos();
   return renderUsuarios();
 }
 

@@ -60,6 +60,26 @@ def ensure_access_schema(conn):
     user_cols = {row['name'] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     if 'ativo' not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN ativo INTEGER NOT NULL DEFAULT 1")
+    if 'role' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT")
+    if 'status' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'ATIVO'")
+    if 'inactivatedAt' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN inactivatedAt TEXT")
+    if 'createdAt' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN createdAt TEXT")
+    if 'updatedAt' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN updatedAt TEXT")
+
+    cc_cols = {row['name'] for row in conn.execute("PRAGMA table_info(centros_custo)").fetchall()}
+    if 'code' not in cc_cols:
+        conn.execute("ALTER TABLE centros_custo ADD COLUMN code TEXT")
+    if 'status' not in cc_cols:
+        conn.execute("ALTER TABLE centros_custo ADD COLUMN status TEXT NOT NULL DEFAULT 'ATIVO'")
+    if 'createdAt' not in cc_cols:
+        conn.execute("ALTER TABLE centros_custo ADD COLUMN createdAt TEXT")
+    if 'updatedAt' not in cc_cols:
+        conn.execute("ALTER TABLE centros_custo ADD COLUMN updatedAt TEXT")
 
     ucc_sql_row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='user_cost_centers'").fetchone()
     ucc_sql = (ucc_sql_row['sql'] or '') if ucc_sql_row else ''
@@ -247,6 +267,11 @@ def seed_data(conn):
         conn.executemany('INSERT INTO centros_custo(nome) VALUES(?)', [
             ('Administração',), ('Armazém',), ('Comercial',), ('Grãos',), ('Insumos',), ('Logística',)
         ])
+    centers = conn.execute('SELECT id, nome, code, status, createdAt, updatedAt FROM centros_custo ORDER BY id').fetchall()
+    for c in centers:
+        code = c['code'] or f"CC{int(c['id']):03d}"
+        ts = now()
+        conn.execute("UPDATE centros_custo SET code=?, status=COALESCE(status,'ATIVO'), createdAt=COALESCE(createdAt, ?), updatedAt=? WHERE id=?", (code, ts, ts, c['id']))
     if conn.execute('SELECT COUNT(*) c FROM contas_contabeis').fetchone()['c'] == 0:
         contas = [
             ('1.1.01', 'Caixa'), ('1.1.02', 'Bancos'), ('2.1.01', 'Fornecedores'),
@@ -280,11 +305,17 @@ def seed_data(conn):
         conn.execute('INSERT OR IGNORE INTO role_permissions(roleId, permissionId) VALUES(?,?)', (role_id['DIRETORIA'], pid))
 
     if conn.execute('SELECT COUNT(*) c FROM users').fetchone()['c'] == 0:
-        conn.executemany('INSERT INTO users(nome,email,ativo) VALUES(?,?,1)', [
-            ('Ana Diretoria', 'diretoria@coop.local'),
-            ('Bruno Gestor', 'gestor@coop.local'),
-            ('Carla Operadora', 'operador@coop.local')
+        conn.executemany('INSERT INTO users(nome,email,ativo,role,status,createdAt,updatedAt) VALUES(?,?,1,?,?,?,?)', [
+            ('Ana Diretoria', 'diretoria@coop.local', 'DIRETORIA', 'ATIVO', now(), now()),
+            ('Bruno Gestor', 'gestor@coop.local', 'GESTOR', 'ATIVO', now(), now()),
+            ('Carla Operadora', 'operador@coop.local', 'OPERADOR', 'ATIVO', now(), now())
         ])
+
+
+    for u in conn.execute('SELECT id FROM users').fetchall():
+        roles = [r['name'] for r in conn.execute('SELECT r.name FROM roles r JOIN user_roles ur ON ur.roleId=r.id WHERE ur.userId=?', (u['id'],)).fetchall()]
+        role = roles[0] if roles else 'OPERADOR'
+        conn.execute("UPDATE users SET role=COALESCE(role,?), status=CASE WHEN ativo=1 THEN COALESCE(status,'ATIVO') ELSE 'INATIVO' END, createdAt=COALESCE(createdAt, ?), updatedAt=COALESCE(updatedAt, ?) WHERE id=?", (role, now(), now(), u['id']))
 
     users = {u['email']: u['id'] for u in conn.execute('SELECT * FROM users').fetchall()}
     conn.execute('INSERT OR IGNORE INTO user_roles(userId, roleId) VALUES(?,?)', (users['diretoria@coop.local'], role_id['DIRETORIA']))
@@ -295,6 +326,28 @@ def seed_data(conn):
     conn.execute('INSERT OR IGNORE INTO user_cost_centers(userId, costCenterId, linkType) VALUES(?,?,?)', (users['gestor@coop.local'], cc['Administração'], 'GESTOR_CC'))
     conn.execute('INSERT OR IGNORE INTO user_cost_centers(userId, costCenterId, linkType) VALUES(?,?,?)', (users['gestor@coop.local'], cc['Comercial'], 'GESTOR_CC'))
     conn.execute('INSERT OR IGNORE INTO user_cost_centers(userId, costCenterId, linkType) VALUES(?,?,?)', (users['operador@coop.local'], cc['Administração'], 'OPERADOR_CC'))
+
+
+def sync_user_role_and_cc(conn, user_id, role, cost_center_ids):
+    if role == 'DIRETORIA':
+        cost_center_ids = []
+    if role in ('OPERADOR', 'GESTOR') and not cost_center_ids:
+        raise ValueError('Para OPERADOR/GESTOR é obrigatório selecionar ao menos 1 Centro de Custo.')
+
+    # synchronize role in users and legacy user_roles mapping
+    conn.execute('UPDATE users SET role=?, updatedAt=? WHERE id=?', (role, now(), user_id))
+    role_id = conn.execute('SELECT id FROM roles WHERE name=?', (role,)).fetchone()
+    if role_id:
+        conn.execute('DELETE FROM user_roles WHERE userId=?', (user_id,))
+        conn.execute('INSERT OR IGNORE INTO user_roles(userId, roleId) VALUES(?,?)', (user_id, role_id['id']))
+
+    current = {r['costCenterId'] for r in conn.execute('SELECT costCenterId FROM user_cost_centers WHERE userId=?', (user_id,)).fetchall()}
+    target = set(cost_center_ids)
+    for cc_id in current - target:
+        conn.execute('DELETE FROM user_cost_centers WHERE userId=? AND costCenterId=?', (user_id, cc_id))
+    for cc_id in target - current:
+        link_type = 'GESTOR_CC' if role == 'GESTOR' else 'OPERADOR_CC'
+        conn.execute('INSERT OR REPLACE INTO user_cost_centers(userId,costCenterId,linkType) VALUES(?,?,?)', (user_id, cc_id, link_type))
 
 # Formula logic
 
@@ -425,7 +478,7 @@ class Handler(BaseHTTPRequestHandler):
         if not user:
             return None
         user = dict(user)
-        if not user.get('ativo', 1):
+        if (not user.get('ativo', 1)) or user.get('status') == 'INATIVO':
             return None
         return user
 
@@ -499,7 +552,7 @@ class Handler(BaseHTTPRequestHandler):
         with db_conn() as conn:
             # Public login helper
             if path == '/api/session/users':
-                return self.json([dict(r) for r in conn.execute('SELECT id,nome,email,ativo FROM users WHERE ativo=1 ORDER BY id')])
+                return self.json([dict(r) for r in conn.execute("SELECT id,nome,email,role,status FROM users WHERE status='ATIVO' ORDER BY id")])
             if path == '/api/session/me':
                 user = self.current_user(conn, q)
                 if not user:
@@ -546,6 +599,31 @@ class Handler(BaseHTTPRequestHandler):
                 items = [dict(r) for r in conn.execute('SELECT * FROM planejamentos ORDER BY ano DESC, atualizadoEm DESC LIMIT ? OFFSET ?', (size, off))]
                 return self.json({'items': items, 'total': total, 'page': page, 'pageSize': size})
 
+
+            if path == '/api/users':
+                _, err, code = self.require_perm(conn, q, 'parametros.read')
+                if err:
+                    return self.json(err, code)
+                page, size, off = self.paginate(q)
+                search = (q.get('query', [''])[0] or '').strip().lower()
+                where = 'WHERE lower(nome) LIKE ? OR lower(email) LIKE ?' if search else ''
+                params = [f'%{search}%', f'%{search}%'] if search else []
+                total = conn.execute(f'SELECT COUNT(*) c FROM users {where}', params).fetchone()['c']
+                rows = conn.execute(f'SELECT id,nome,email,role,status,inactivatedAt,createdAt,updatedAt FROM users {where} ORDER BY id LIMIT ? OFFSET ?', (*params, size, off)).fetchall()
+                items = []
+                for r in rows:
+                    u = dict(r)
+                    u['costCenterIds'] = [x['costCenterId'] for x in conn.execute('SELECT costCenterId FROM user_cost_centers WHERE userId=? ORDER BY costCenterId', (u['id'],)).fetchall()]
+                    items.append(u)
+                return self.json({'items': items, 'total': total, 'page': page, 'pageSize': size})
+
+            if path == '/api/cost-centers':
+                _, err, code = self.require_perm(conn, q, 'parametros.read')
+                if err:
+                    return self.json(err, code)
+                items = [dict(r) for r in conn.execute('SELECT id, code, nome as name, status, createdAt, updatedAt FROM centros_custo ORDER BY nome')]
+                return self.json({'items': items})
+
             if path == '/api/parametros/usuarios':
                 _, err, code = self.require_perm(conn, q, 'parametros.read')
                 if err:
@@ -591,23 +669,6 @@ class Handler(BaseHTTPRequestHandler):
                        ORDER BY r.id, p.key'''
                 )]
                 return self.json(items)
-
-
-            if m := re.match(r'^/api/parametros/usuarios/(\d+)/cost-centers$', path):
-                user, err, code = self.require_perm(conn, q, 'parametros.write')
-                if err:
-                    return self.json(err, code)
-                target_user = int(m.group(1))
-                desired = {(int(v['costCenterId']), v['linkType']) for v in data.get('vinculos', [])}
-                current_rows = conn.execute('SELECT costCenterId, linkType FROM user_cost_centers WHERE userId=?', (target_user,)).fetchall()
-                current = {(r['costCenterId'], r['linkType']) for r in current_rows}
-                for cc_id, link_type in current - desired:
-                    conn.execute('DELETE FROM user_cost_centers WHERE userId=? AND costCenterId=?', (target_user, cc_id))
-                for cc_id, link_type in desired - current:
-                    conn.execute('INSERT OR REPLACE INTO user_cost_centers(userId,costCenterId,linkType) VALUES(?,?,?)', (target_user, cc_id, link_type))
-                updated = [dict(r) for r in conn.execute('SELECT * FROM user_cost_centers WHERE userId=?', (target_user,)).fetchall()]
-                log_audit(conn, user['id'], 'UPSERT', 'USER_COST_CENTERS', target_user, [dict(r) for r in current_rows], updated)
-                return self.json({'ok': True, 'items': updated})
 
             if path == '/api/parametros/user-cost-centers':
                 _, err, code = self.require_perm(conn, q, 'parametros.read')
@@ -702,6 +763,40 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(p.query)
         data = self.body()
         with db_conn() as conn:
+
+            if path == '/api/users':
+                actor, err, code = self.require_perm(conn, q, 'parametros.write')
+                if err:
+                    return self.json(err, code)
+                role = data.get('role')
+                if role not in ('OPERADOR', 'GESTOR', 'DIRETORIA'):
+                    return self.json({'error': 'Cargo inválido.'}, 422)
+                cc_ids = [int(x) for x in data.get('costCenterIds', [])]
+                try:
+                    ts = now()
+                    cur = conn.execute('INSERT INTO users(nome,email,ativo,role,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)', (data['name'], data['email'], 1, role, 'ATIVO', ts, ts))
+                    sync_user_role_and_cc(conn, cur.lastrowid, role, cc_ids)
+                except ValueError as e:
+                    return self.json({'error': str(e)}, 422)
+                created = dict(conn.execute('SELECT id,nome,email,role,status,inactivatedAt,createdAt,updatedAt FROM users WHERE id=?', (cur.lastrowid,)).fetchone())
+                created['costCenterIds'] = [x['costCenterId'] for x in conn.execute('SELECT costCenterId FROM user_cost_centers WHERE userId=? ORDER BY costCenterId', (cur.lastrowid,)).fetchall()]
+                log_audit(conn, actor['id'], 'CREATE', 'USER', cur.lastrowid, None, created)
+                return self.json(created, 201)
+
+            if m := re.match(r'^/api/users/(\d+)/inactivate$', path):
+                actor, err, code = self.require_perm(conn, q, 'parametros.write')
+                if err:
+                    return self.json(err, code)
+                before = conn.execute('SELECT * FROM users WHERE id=?', (m.group(1),)).fetchone()
+                if not before:
+                    return self.json({'error': 'Usuário não encontrado.'}, 404)
+                if before['status'] == 'INATIVO':
+                    return self.json({'error': 'Usuário já está inativo.'}, 409)
+                conn.execute("UPDATE users SET status='INATIVO', ativo=0, inactivatedAt=?, updatedAt=? WHERE id=?", (now(), now(), m.group(1)))
+                after = conn.execute('SELECT * FROM users WHERE id=?', (m.group(1),)).fetchone()
+                log_audit(conn, actor['id'], 'INATIVAR', 'USER', m.group(1), dict(before), dict(after))
+                return self.json({'ok': True})
+
             if path == '/api/planejamentos':
                 _, err, code = self.require_perm(conn, q, 'planning.write')
                 if err:
@@ -820,7 +915,14 @@ class Handler(BaseHTTPRequestHandler):
                 user, err, code = self.require_perm(conn, q, 'parametros.write')
                 if err:
                     return self.json(err, code)
-                cur = conn.execute('INSERT INTO users(nome,email,ativo) VALUES(?,?,1)', (data['nome'], data['email']))
+                role = data.get('role') or 'OPERADOR'
+                cc_ids = [int(x) for x in data.get('costCenterIds', [])]
+                ts = now()
+                cur = conn.execute('INSERT INTO users(nome,email,ativo,role,status,createdAt,updatedAt) VALUES(?,?,?,?,?,?,?)', (data['nome'], data['email'], 1, role, 'ATIVO', ts, ts))
+                try:
+                    sync_user_role_and_cc(conn, cur.lastrowid, role, cc_ids)
+                except ValueError as e:
+                    return self.json({'error': str(e)}, 422)
                 created = dict(conn.execute('SELECT * FROM users WHERE id=?', (cur.lastrowid,)).fetchone())
                 log_audit(conn, user['id'], 'CREATE', 'USER', cur.lastrowid, None, created)
                 return self.json(created, 201)
@@ -896,6 +998,31 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(p.query)
         data = self.body()
         with db_conn() as conn:
+
+            if m := re.match(r'^/api/users/(\d+)$', path):
+                actor, err, code = self.require_perm(conn, q, 'parametros.write')
+                if err:
+                    return self.json(err, code)
+                user_id = int(m.group(1))
+                before = conn.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+                if not before:
+                    return self.json({'error': 'Usuário não encontrado.'}, 404)
+                if before['status'] == 'INATIVO':
+                    return self.json({'error': 'Usuário inativo não pode ser alterado.'}, 409)
+                role = data.get('role')
+                if role not in ('OPERADOR', 'GESTOR', 'DIRETORIA'):
+                    return self.json({'error': 'Cargo inválido.'}, 422)
+                cc_ids = [int(x) for x in data.get('costCenterIds', [])]
+                conn.execute('UPDATE users SET nome=?, updatedAt=? WHERE id=?', (data['name'], now(), user_id))
+                try:
+                    sync_user_role_and_cc(conn, user_id, role, cc_ids)
+                except ValueError as e:
+                    return self.json({'error': str(e)}, 422)
+                after = dict(conn.execute('SELECT id,nome,email,role,status,inactivatedAt,createdAt,updatedAt FROM users WHERE id=?', (user_id,)).fetchone())
+                after['costCenterIds'] = [x['costCenterId'] for x in conn.execute('SELECT costCenterId FROM user_cost_centers WHERE userId=? ORDER BY costCenterId', (user_id,)).fetchall()]
+                log_audit(conn, actor['id'], 'UPDATE', 'USER', user_id, dict(before), after)
+                return self.json(after)
+
             if m := re.match(r'^/api/modelos/(\d+)$', path):
                 user, err, code = self.require_perm(conn, q, 'planning.write')
                 if err:
@@ -982,11 +1109,7 @@ class Handler(BaseHTTPRequestHandler):
                 user, err, code = self.require_perm(conn, q, 'parametros.write')
                 if err:
                     return self.json(err, code)
-                before = conn.execute('SELECT * FROM users WHERE id=?', (m.group(1),)).fetchone()
-                conn.execute('UPDATE users SET ativo=0 WHERE id=?', (m.group(1),))
-                after = conn.execute('SELECT * FROM users WHERE id=?', (m.group(1),)).fetchone()
-                log_audit(conn, user['id'], 'INATIVAR', 'USER', m.group(1), dict(before) if before else None, dict(after) if after else None)
-                self.send_response(204); self.end_headers(); return
+                return self.json({'error': 'DELETE físico de usuário não é permitido. Use /api/users/:id/inactivate.'}, 405)
 
             if m := re.match(r'^/api/centros-custo/(\d+)$', path):
                 _, err, code = self.require_perm(conn, q, 'parametros.write')
