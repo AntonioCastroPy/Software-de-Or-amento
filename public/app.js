@@ -106,55 +106,183 @@ async function renderPlanejamentos() {
 }
 
 async function renderDetalhe(id) {
-  app.innerHTML = '<div class="card">Carregando...</div>';
-  const plan = await api(`/api/planejamentos/${id}`);
-  const { items } = await api(`/api/planejamentos/${id}/modelos?page=1&pageSize=100`);
-  app.innerHTML = `
-    <div class="card"><h2>${plan.nome} (${plan.ano})</h2><span class="status ${plan.status}">${plan.status}</span></div>
-    <div class="card"><button class="primary" id="novoModelo">Novo Modelo</button></div>
-    <table class="table">
-      <thead><tr><th>Nome</th><th>Tipo</th><th>Atualizado</th><th>Ações</th></tr></thead>
-      <tbody>${items.length ? items.map(m => `<tr>
-        <td>${m.nome}</td><td>${m.tipo}</td><td>${new Date(m.atualizadoEm).toLocaleString('pt-BR')}</td>
-        <td class="actions">
-          <a href="/planejamentos/${id}/modelos/${m.id}/editar" data-link>Editar Estrutura</a>
-          <a href="/planejamentos/${id}/modelos/${m.id}/preencher" data-link>Preencher</a>
-          <button data-del-modelo="${m.id}">Excluir</button>
-        </td>
-      </tr>`).join('') : '<tr><td colspan="4">Sem modelos.</td></tr>'}</tbody>
-    </table>
-  `;
+  app.innerHTML = '<div class="card"><div class="state-box">Carregando modelos...</div></div>';
 
-  document.getElementById('novoModelo').onclick = () => {
-    openModal(`
-      <form id="formModel" class="grid" method="dialog">
-        <h3>Novo Modelo</h3>
-        <label>Nome <input name="nome" required></label>
-        <label>Tipo <select name="tipo"><option>receita</option><option>despesa</option><option>driver</option><option>outro</option></select></label>
-        <label>Descrição <textarea name="descricao"></textarea></label>
-        <div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div>
-      </form>
-    `);
-    document.getElementById('cancel').onclick = closeModal;
-    document.getElementById('formModel').onsubmit = async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      try {
-        await api(`/api/planejamentos/${id}/modelos`, { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), tipo: fd.get('tipo'), descricao: fd.get('descricao') }) });
-        closeModal(); render();
-      } catch (err) { document.getElementById('err').textContent = err.message; }
+  let plan;
+  try {
+    plan = await api(`/api/planejamentos/${id}`);
+  } catch (err) {
+    app.innerHTML = `<div class="card"><div class="state-box error">Erro ao carregar planejamento: ${err.message}</div></div>`;
+    return;
+  }
+
+  const state = { items: [], q: '', tipo: '' };
+
+  function filteredItems() {
+    return state.items.filter((m) => {
+      const passName = !state.q || m.nome.toLowerCase().includes(state.q.toLowerCase());
+      const passTipo = !state.tipo || m.tipo === state.tipo;
+      return passName && passTipo;
+    });
+  }
+
+  function renderTable(errorMsg = null) {
+    const items = filteredItems();
+    const countLabel = `${items.length} ${items.length === 1 ? 'modelo' : 'modelos'}`;
+    app.innerHTML = `
+      <section class="page-header">
+        <div>
+          <h1 class="page-title">${plan.nome} (${plan.ano})</h1>
+          <div class="page-subtitle">
+            <span class="status ${plan.status}">${plan.status}</span>
+            <span>Atualizado em ${new Date(plan.atualizadoEm).toLocaleString('pt-BR')}</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="primary" id="novoModelo">Novo Modelo</button>
+          <div class="dropdown">
+            <button id="globalMenuBtn" aria-label="Mais ações">...</button>
+            <div class="menu" id="globalMenu">
+              <button type="button">Copiar Estrutura (placeholder)</button>
+              <button type="button">Configurações (placeholder)</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="table-toolbar">
+          <input id="searchModelo" placeholder="Buscar modelos..." value="${state.q}">
+          <select id="tipoModelo">
+            <option value="">Todos os tipos</option>
+            <option value="receita" ${state.tipo === 'receita' ? 'selected' : ''}>receita</option>
+            <option value="despesa" ${state.tipo === 'despesa' ? 'selected' : ''}>despesa</option>
+            <option value="driver" ${state.tipo === 'driver' ? 'selected' : ''}>driver</option>
+            <option value="outro" ${state.tipo === 'outro' ? 'selected' : ''}>outro</option>
+          </select>
+          <div class="item-count">${countLabel}</div>
+        </div>
+
+        ${errorMsg ? `<div class="state-box error">${errorMsg}</div>` : ''}
+        ${!errorMsg && items.length === 0 ? '<div class="state-box">Nenhum modelo encontrado para os filtros aplicados.</div>' : ''}
+
+        ${!errorMsg && items.length ? `
+          <table class="table">
+            <thead><tr><th>Nome</th><th>Tipo</th><th>Atualizado</th><th style="width:220px">Ações</th></tr></thead>
+            <tbody>
+              ${items.map(m => `
+                <tr>
+                  <td>
+                    <div class="model-name">${m.nome}</div>
+                    <div class="muted">${m.descricao || 'Sem descrição'}</div>
+                  </td>
+                  <td><span class="muted">${m.tipo}</span></td>
+                  <td><span class="muted">${new Date(m.atualizadoEm).toLocaleString('pt-BR')}</span></td>
+                  <td>
+                    <div class="actions">
+                      <a href="/planejamentos/${id}/modelos/${m.id}/preencher" data-link><button class="primary small">Preencher</button></a>
+                      <div class="dropdown">
+                        <button class="small" data-row-menu="${m.id}">...</button>
+                        <div class="menu" id="rowMenu-${m.id}">
+                          <a href="/planejamentos/${id}/modelos/${m.id}/editar" data-link>Editar estrutura</a>
+                          <button type="button" data-dup-modelo="${m.id}">Duplicar (placeholder)</button>
+                          <button type="button" class="danger-item" data-del-modelo="${m.id}">Excluir</button>
+                        </div>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        ` : ''}
+      </section>
+    `;
+
+    const globalBtn = document.getElementById('globalMenuBtn');
+    const globalMenu = document.getElementById('globalMenu');
+    globalBtn.onclick = (e) => {
+      e.stopPropagation();
+      globalMenu.classList.toggle('open');
     };
-  };
 
-  app.querySelectorAll('[data-del-modelo]').forEach(btn => btn.onclick = async () => {
+    document.getElementById('searchModelo').oninput = (e) => {
+      state.q = e.target.value;
+      renderTable(errorMsg);
+    };
+    document.getElementById('tipoModelo').onchange = (e) => {
+      state.tipo = e.target.value;
+      renderTable(errorMsg);
+    };
+
+    app.querySelectorAll('[data-row-menu]').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.menu.open').forEach(menu => menu.classList.remove('open'));
+        const menu = document.getElementById(`rowMenu-${btn.dataset.rowMenu}`);
+        menu.classList.toggle('open');
+      };
+    });
+
+    app.querySelectorAll('[data-dup-modelo]').forEach(btn => btn.onclick = () => alert('Duplicar modelo (placeholder nesta fase).'));
+    app.querySelectorAll('[data-del-modelo]').forEach(btn => btn.onclick = async () => {
+      const ok = confirm('Tem certeza que deseja excluir este modelo?');
+      if (!ok) return;
+      try {
+        await api(`/api/modelos/${btn.dataset.delModelo}`, { method: 'DELETE' });
+        await loadModelos();
+      } catch (err) {
+        renderTable(err.message);
+      }
+    });
+
+    document.addEventListener('click', () => document.querySelectorAll('.menu.open').forEach(menu => menu.classList.remove('open')), { once: true });
+
+    document.getElementById('novoModelo').onclick = () => {
+      openModal(`
+        <form id="formModel" class="grid" method="dialog">
+          <h3>Novo Modelo</h3>
+          <label>Nome <input name="nome" required></label>
+          <label>Tipo <select name="tipo"><option>receita</option><option>despesa</option><option>driver</option><option>outro</option></select></label>
+          <label>Descrição <textarea name="descricao"></textarea></label>
+          <div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div>
+        </form>
+      `);
+      document.getElementById('cancel').onclick = closeModal;
+      document.getElementById('formModel').onsubmit = async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        try {
+          await api(`/api/planejamentos/${id}/modelos`, { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), tipo: fd.get('tipo'), descricao: fd.get('descricao') }) });
+          closeModal();
+          await loadModelos();
+        } catch (err) { document.getElementById('err').textContent = err.message; }
+      };
+    };
+  }
+
+  async function loadModelos() {
+    app.innerHTML = `
+      <section class="page-header">
+        <div>
+          <h1 class="page-title">${plan.nome} (${plan.ano})</h1>
+          <div class="page-subtitle"><span class="status ${plan.status}">${plan.status}</span><span>Atualizado em ${new Date(plan.atualizadoEm).toLocaleString('pt-BR')}</span></div>
+        </div>
+      </section>
+      <section class="card"><div class="state-box">Carregando modelos...</div></section>
+    `;
     try {
-      await api(`/api/modelos/${btn.dataset.delModelo}`, { method: 'DELETE' });
-      render();
+      const { items } = await api(`/api/planejamentos/${id}/modelos?page=1&pageSize=100`);
+      state.items = items;
+      renderTable();
     } catch (err) {
-      alert(err.message);
+      renderTable(`Erro ao carregar modelos: ${err.message}`);
     }
-  });
+  }
+
+  await loadModelos();
 }
+
 
 async function renderEditor(planId, modeloId) {
   const [linhasRes, contas] = await Promise.all([
@@ -308,6 +436,9 @@ function renderParametros() {
 
 async function render() {
   const path = location.pathname;
+  document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+  const active = path.startsWith('/planejamentos') ? '/planejamentos' : (path.startsWith('/parametros') ? '/parametros' : '/planejamentos');
+  document.querySelector(`.sidebar a[href="${active}"]`)?.classList.add('active');
   try {
     if (path === '/' || path === '/planejamentos') return renderPlanejamentos();
     if (path === '/parametros') return renderParametros();
