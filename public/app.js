@@ -146,13 +146,16 @@ async function renderPreencher(planId, modeloId) {
       app.innerHTML = '<div class="card"><div class="state-box error">Você não possui Centro de Custo vinculado.</div></div>';
       return;
     }
-    const data = await api(`/api/modelos/${modeloId}/valores?centroCustoId=${centroCustoId}&ano=${ano}`);
+    const [data, wf] = await Promise.all([
+      api(`/api/modelos/${modeloId}/valores?centroCustoId=${centroCustoId}&ano=${ano}`),
+      api(`/api/planejamentos/${planId}/workflow?centroCustoId=${centroCustoId}`)
+    ]);
     const valMap = {}; data.valores.forEach(v => valMap[`${v.linhaId}-${v.mes}`] = v.valor);
-    app.innerHTML = `<div class="card"><h2>Preenchimento Mensal</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div><div class="card"><label>Centro de Custo ativo<select id="ccSel">${ccs.map(c => `<option value="${c.id}" ${c.id===centroCustoId?'selected':''}>${c.nome}</option>`).join('')}</select></label></div><div class="card" style="overflow:auto"><table class="table"><thead><tr><th>Linha</th>${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead><tbody>${data.linhas.map(l => {
+    app.innerHTML = `<div class="card"><h2>Preenchimento Mensal</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div><div class="card"><label>Centro de Custo ativo<select id="ccSel">${ccs.map(c => `<option value="${c.id}" ${c.id===centroCustoId?'selected':''}>${c.nome}</option>`).join('')}</select></label><span class="status">Workflow: ${wf.status}</span></div><div class="card" style="overflow:auto"><table class="table"><thead><tr><th>Linha</th>${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead><tbody>${data.linhas.map(l => {
       const cls = l.tipoLinha === 'header' ? 'header-row' : '';
       const cells = Array.from({ length: 12 }, (_, i) => {
         const val = Number(valMap[`${l.id}-${i+1}`] ?? 0);
-        return l.tipoLinha === 'input' ? `<td><input class="cell-input" data-linha="${l.id}" data-mes="${i+1}" value="${val}"></td>` : `<td>${val.toFixed(2)}</td>`;
+        return l.tipoLinha === 'input' ? `<td><input class="cell-input" data-linha="${l.id}" data-mes="${i+1}" value="${val}" ${wf.status!=='ABERTO'?'disabled':''}></td>` : `<td>${val.toFixed(2)}</td>`;
       }).join('');
       const total = Array.from({ length: 12 }, (_, i) => Number(valMap[`${l.id}-${i+1}`] ?? 0)).reduce((a,b)=>a+b,0);
       return `<tr class="${cls}"><td>${l.codigo} - ${l.nomeLinha}</td>${cells}<td>${total.toFixed(2)}</td></tr>`;
@@ -180,31 +183,45 @@ function renderParametrosShell() {
 
 async function renderUsuarios() {
   const tab = renderParametrosShell(); if (tab !== 'usuarios') return;
-  const { items } = await api('/api/parametros/usuarios?page=1&pageSize=100');
-  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="table-toolbar"><input id="buscaUser" placeholder="Buscar usuários..."><div class="item-count">${items.length} usuários</div><button class="primary" id="novoUser">Novo</button></div><table class="table"><thead><tr><th>Nome</th><th>Email</th><th>Ações</th></tr></thead><tbody id="userRows"></tbody></table></div>`;
+  const [usersRes, ccs] = await Promise.all([
+    api('/api/parametros/usuarios?page=1&pageSize=100'),
+    api('/api/centros-custo?page=1&pageSize=200').then(r=>r.items)
+  ]);
+  const items = usersRes.items;
+  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="table-toolbar"><input id="buscaUser" placeholder="Buscar usuários..."><div class="item-count">${items.length} usuários</div><button class="primary" id="novoUser">Novo</button></div><table class="table"><thead><tr><th>Nome</th><th>Email</th><th>Status</th><th>Ações</th></tr></thead><tbody id="userRows"></tbody></table></div>`;
   const renderRows = (q='') => {
     const rows = items.filter(u => !q || `${u.nome} ${u.email}`.toLowerCase().includes(q.toLowerCase()));
-    document.getElementById('userRows').innerHTML = rows.length ? rows.map(u => `<tr><td>${u.nome}</td><td>${u.email}</td><td class="actions"><button data-edit="${u.id}">Editar</button><button class="destructive" data-del="${u.id}">Excluir</button></td></tr>`).join('') : '<tr><td colspan="3">Sem usuários.</td></tr>';
+    document.getElementById('userRows').innerHTML = rows.length ? rows.map(u => `<tr><td>${u.nome}</td><td>${u.email}</td><td>${u.ativo ? 'Ativo' : 'Inativo'}</td><td class="actions"><button data-edit="${u.id}">Editar</button>${u.ativo ? `<button class="destructive" data-inativar="${u.id}">Inativar</button>` : ''}</td></tr>`).join('') : '<tr><td colspan="4">Sem usuários.</td></tr>';
     document.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openUserForm(items.find(u => u.id === Number(btn.dataset.edit))));
-    document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => { if(confirm('Excluir usuário?')) { await api(`/api/parametros/usuarios/${btn.dataset.del}`, { method: 'DELETE' }); render(); }});
+    document.querySelectorAll('[data-inativar]').forEach(btn => btn.onclick = async () => { if(confirm('Inativar usuário?')) { await api(`/api/parametros/usuarios/${btn.dataset.inativar}`, { method: 'DELETE' }); render(); }});
   };
   document.getElementById('buscaUser').oninput = (e) => renderRows(e.target.value);
   renderRows();
   document.getElementById('novoUser').onclick = () => openUserForm();
 
-  function openUserForm(u) {
-    openModal(`<form id="fUser" class="grid"><h3>${u?'Editar':'Novo'} Usuário</h3><label>Nome <input name="nome" value="${u?.nome||''}" required></label><label>Email <input name="email" value="${u?.email||''}" required></label><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div></form>`);
+  async function openUserForm(u) {
+    const currentLinks = u ? await api(`/api/parametros/usuarios/${u.id}/cost-centers`) : [];
+    const linkMap = Object.fromEntries(currentLinks.map(v => [v.costCenterId, v.linkType]));
+    openModal(`<form id="fUser" class="grid"><h3>${u?'Editar':'Novo'} Usuário</h3><label>Nome <input name="nome" value="${u?.nome||''}" required></label><label>Email <input name="email" value="${u?.email||''}" required></label><h4>Centros de Custo</h4><div class="grid">${ccs.map(c => `<label><input type="checkbox" name="cc" value="${c.id}" ${linkMap[c.id]?'checked':''}> ${c.nome} <select name="tipo-${c.id}"><option value="GESTOR_CC" ${linkMap[c.id]==='GESTOR_CC'?'selected':''}>GESTOR_CC</option><option value="OPERADOR_CC" ${linkMap[c.id]==='OPERADOR_CC'?'selected':''}>OPERADOR_CC</option><option value="LEITOR_CC" ${linkMap[c.id]==='LEITOR_CC'?'selected':''}>LEITOR_CC</option></select></label>`).join('')}</div><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div></form>`);
     document.getElementById('cancel').onclick = closeModal;
     document.getElementById('fUser').onsubmit = async (e) => {
       e.preventDefault(); const fd = new FormData(e.target);
       try {
+        let userId = u?.id;
         if (u) await api(`/api/parametros/usuarios/${u.id}`, { method: 'PUT', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
-        else await api('/api/parametros/usuarios', { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
+        else {
+          const created = await api('/api/parametros/usuarios', { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
+          userId = created.id;
+        }
+        const selected = fd.getAll('cc').map(v => Number(v));
+        const vinculos = selected.map(ccId => ({ costCenterId: ccId, linkType: fd.get(`tipo-${ccId}`) || 'LEITOR_CC' }));
+        if (userId) await api(`/api/parametros/usuarios/${userId}/cost-centers`, { method: 'POST', body: JSON.stringify({ vinculos }) });
         closeModal(); render();
       } catch (err) { document.getElementById('err').textContent = err.message; }
     };
   }
 }
+
 
 async function renderAcessos() {
   const tab = renderParametrosShell(); if (tab !== 'acessos') return;
@@ -241,7 +258,7 @@ async function renderVinculos() {
   const [vinc, users, ccs] = await Promise.all([
     api('/api/parametros/user-cost-centers'), api('/api/parametros/usuarios?page=1&pageSize=100').then(r=>r.items), api('/api/centros-custo?page=1&pageSize=200').then(r=>r.items)
   ]);
-  document.getElementById('paramContent').innerHTML = `<div class='card'><div class='actions'><select id='vUser'>${users.map(u=>`<option value='${u.id}'>${u.nome}</option>`)}</select><select id='vCc'>${ccs.map(c=>`<option value='${c.id}'>${c.nome}</option>`)}</select><select id='vType'><option>GESTOR</option><option>OPERADOR</option></select><button class='primary' id='addV'>Vincular</button></div><table class='table'><thead><tr><th>Usuário</th><th>CC</th><th>Tipo</th><th></th></tr></thead><tbody>${vinc.map(v=>`<tr><td>${v.userNome}</td><td>${v.costCenterNome}</td><td>${v.linkType}</td><td><button class='destructive' data-del='${JSON.stringify({userId:v.userId,costCenterId:v.costCenterId})}'>Remover</button></td></tr>`).join('')}</tbody></table></div>`;
+  document.getElementById('paramContent').innerHTML = `<div class='card'><div class='actions'><select id='vUser'>${users.map(u=>`<option value='${u.id}'>${u.nome}</option>`)}</select><select id='vCc'>${ccs.map(c=>`<option value='${c.id}'>${c.nome}</option>`)}</select><select id='vType'><option>GESTOR_CC</option><option>OPERADOR_CC</option><option>LEITOR_CC</option></select><button class='primary' id='addV'>Vincular</button></div><table class='table'><thead><tr><th>Usuário</th><th>CC</th><th>Tipo</th><th></th></tr></thead><tbody>${vinc.map(v=>`<tr><td>${v.userNome}</td><td>${v.costCenterNome}</td><td>${v.linkType}</td><td><button class='destructive' data-del='${JSON.stringify({userId:v.userId,costCenterId:v.costCenterId})}'>Remover</button></td></tr>`).join('')}</tbody></table></div>`;
   document.getElementById('addV').onclick = async () => {
     await api('/api/parametros/user-cost-centers', { method:'POST', body: JSON.stringify({ userId:Number(document.getElementById('vUser').value), costCenterId:Number(document.getElementById('vCc').value), linkType: document.getElementById('vType').value }) });
     render();

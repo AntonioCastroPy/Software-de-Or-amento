@@ -34,13 +34,17 @@ Seeds de usuários:
 - `permissions` (ex.: `planning.read`, `planning.fill.write`)
 - `role_permissions`
 - `user_roles`
-- `user_cost_centers` (`linkType`: `GESTOR|OPERADOR`)
+- `user_cost_centers` (`linkType`: `GESTOR_CC|OPERADOR_CC|LEITOR_CC`)
+- `workflow_cc_status` (status por Planejamento x Centro de Custo)
+- `audit_log` (trilha de auditoria)
 
 ### Regras
 - Deny-by-default no backend (sem permissão explícita = 403)
 - Rotas de Planejamento exigem permissões `planning.*`
 - Rotas de Parâmetros exigem `parametros.*`
 - Rotas com `centroCustoId` validam vínculo do usuário (`user_cost_centers`)
+- Workflow por CC: `ABERTO -> EM_REVISAO -> APROVADO -> BLOQUEADO` com transições por perfil
+- Edição de preenchimento bloqueada quando status != `ABERTO` (exceto usuários autorizados)
 - Usuário com role `DIRETORIA` tem acesso global de CC
 
 ## Endpoints principais
@@ -69,7 +73,7 @@ Seeds de usuários:
 
 ### Parâmetros
 - `GET/POST /api/parametros/usuarios`
-- `PUT/DELETE /api/parametros/usuarios/:id`
+- `PUT/DELETE /api/parametros/usuarios/:id` (`DELETE` = inativação lógica)
 - `GET/POST /api/centros-custo`
 - `PUT/DELETE /api/centros-custo/:id`
 - `GET /api/parametros/roles`
@@ -88,3 +92,18 @@ Seeds de usuários:
    - deve listar todos os 6 CCs.
 4. Tentar acessar CC não vinculado:
    - backend deve responder `403`.
+
+- `GET /api/parametros/usuarios/:id/cost-centers`
+- `POST /api/parametros/usuarios/:id/cost-centers`
+- `GET /api/planejamentos/:id/workflow?centroCustoId=...`
+- `POST /api/planejamentos/:id/workflow/transition`
+- `GET /api/audit-log?page&pageSize`
+
+## Cenários manuais de validação (Governança + Workflow + Auditoria)
+
+1. Gestor (Bruno) abre preenchimento e vê apenas seus CCs; muda CC ativo e dados recarregam.
+2. Operador (Carla) visualiza somente 1 CC no seletor de CC ativo.
+3. Diretoria (Ana) visualiza todos os CCs e consegue avançar `APROVADO -> BLOQUEADO`.
+4. Gestor envia `ABERTO -> EM_REVISAO`; ao tentar editar lançamentos após isso, backend retorna `403`.
+5. Usuário com CC não vinculado tenta acessar `/api/modelos/:id/valores?centroCustoId=...` e recebe `403`.
+6. Criar/editar/inativar usuário, alterar vínculos CC e editar lançamentos/modelos/linhas; validar registros em `/api/audit-log`.
