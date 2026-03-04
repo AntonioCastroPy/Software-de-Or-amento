@@ -1,8 +1,13 @@
 const app = document.getElementById('app');
 const modal = document.getElementById('modal');
+const userSwitcher = document.getElementById('userSwitcher');
+
+let currentUserId = Number(localStorage.getItem('userId') || 1);
+let sessionUsers = [];
 
 async function api(url, options = {}) {
-  const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...options });
+  const headers = { 'Content-Type': 'application/json', 'X-User-Id': String(currentUserId), ...(options.headers || {}) };
+  const res = await fetch(url, { ...options, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Erro inesperado' }));
     throw new Error(err.error || 'Erro');
@@ -11,64 +16,37 @@ async function api(url, options = {}) {
   return res.json();
 }
 
-function go(path) {
-  history.pushState({}, '', path);
-  render();
-}
-
+function go(path) { history.pushState({}, '', path); render(); }
+window.addEventListener('popstate', render);
 document.body.addEventListener('click', (e) => {
   const link = e.target.closest('[data-link]');
-  if (link) {
-    e.preventDefault();
-    go(link.getAttribute('href'));
-  }
+  if (link) { e.preventDefault(); go(link.getAttribute('href')); }
 });
 
-window.addEventListener('popstate', render);
+function openModal(content) { modal.innerHTML = content; modal.showModal(); }
+function closeModal() { modal.close(); }
 
-function openModal(content) {
-  modal.innerHTML = content;
-  modal.showModal();
-}
-
-function closeModal() {
-  modal.close();
+async function loadSessionUsers() {
+  sessionUsers = await fetch('/api/session/users').then(r => r.json());
+  userSwitcher.innerHTML = sessionUsers.map(u => `<option value="${u.id}" ${u.id === currentUserId ? 'selected' : ''}>${u.nome}</option>`).join('');
+  userSwitcher.onchange = () => {
+    currentUserId = Number(userSwitcher.value);
+    localStorage.setItem('userId', String(currentUserId));
+    render();
+  };
 }
 
 async function renderPlanejamentos() {
   app.innerHTML = '<div class="card">Carregando...</div>';
   const { items } = await api('/api/planejamentos?page=1&pageSize=50');
   app.innerHTML = `
-    <div class="card">
-      <div class="actions">
-        <button class="primary" id="novoPlan">Novo Planejamento</button>
-        <button id="copiarPlan">Copiar de...</button>
-      </div>
-    </div>
-    <table class="table">
-      <thead><tr><th>Ano</th><th>Nome</th><th>Status</th><th>Atualizado em</th><th>Ações</th></tr></thead>
-      <tbody>
-      ${items.length ? items.map(p => `
-        <tr>
-          <td>${p.ano}</td><td>${p.nome}</td>
-          <td><span class="status ${p.status}">${p.status}</span></td>
-          <td>${new Date(p.atualizadoEm).toLocaleString('pt-BR')}</td>
-          <td><a href="/planejamentos/${p.id}" data-link>Abrir</a></td>
-        </tr>
-      `).join('') : '<tr><td colspan="5">Nenhum planejamento.</td></tr>'}
-      </tbody>
-    </table>
+    <div class="card"><div class="actions"><button class="primary" id="novoPlan">Novo Planejamento</button><button id="copiarPlan">Copiar de...</button></div></div>
+    <table class="table"><thead><tr><th>Ano</th><th>Nome</th><th>Status</th><th>Atualizado em</th><th>Ações</th></tr></thead>
+    <tbody>${items.length ? items.map(p => `<tr><td>${p.ano}</td><td>${p.nome}</td><td><span class="status ${p.status}">${p.status}</span></td><td>${new Date(p.atualizadoEm).toLocaleString('pt-BR')}</td><td><a href="/planejamentos/${p.id}" data-link>Abrir</a></td></tr>`).join('') : '<tr><td colspan="5">Nenhum planejamento.</td></tr>'}</tbody></table>
   `;
 
   document.getElementById('novoPlan').onclick = () => {
-    openModal(`
-      <form method="dialog" id="formNovo" class="grid">
-        <h3>Novo Planejamento</h3>
-        <label>Nome <input name="nome" required></label>
-        <label>Ano <input name="ano" type="number" required></label>
-        <div class="actions"><button class="primary">Criar</button><button type="button" id="cancel">Cancelar</button></div>
-        <div class="error" id="err"></div>
-      </form>`);
+    openModal(`<form id="formNovo" class="grid"><h3>Novo Planejamento</h3><label>Nome <input name="nome" required></label><label>Ano <input name="ano" type="number" required></label><div class="actions"><button class="primary">Criar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div></form>`);
     document.getElementById('cancel').onclick = closeModal;
     document.getElementById('formNovo').onsubmit = async (e) => {
       e.preventDefault();
@@ -81,22 +59,11 @@ async function renderPlanejamentos() {
   };
 
   document.getElementById('copiarPlan').onclick = async () => {
-    openModal('<div class="card">Carregando...</div>');
     const src = await api('/api/planejamentos?page=1&pageSize=100');
-    openModal(`
-      <form method="dialog" id="formCopia" class="grid">
-        <h3>Copiar estrutura</h3>
-        <label>Origem <select name="origem">${src.items.map(p => `<option value="${p.id}">${p.nome} (${p.ano})</option>`).join('')}</select></label>
-        <label>Novo nome <input name="nome" required></label>
-        <label>Novo ano <input type="number" name="ano" required></label>
-        <div class="small">Copia modelos e linhas. Não copia valores.</div>
-        <div class="actions"><button class="primary">Copiar</button><button type="button" id="cancel">Cancelar</button></div>
-        <div class="error" id="err"></div>
-      </form>`);
+    openModal(`<form id="formCopia" class="grid"><h3>Copiar estrutura</h3><label>Origem <select name="origem">${src.items.map(p => `<option value="${p.id}">${p.nome} (${p.ano})</option>`).join('')}</select></label><label>Novo nome <input name="nome" required></label><label>Novo ano <input type="number" name="ano" required></label><div class="actions"><button class="primary">Copiar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div></form>`);
     document.getElementById('cancel').onclick = closeModal;
     document.getElementById('formCopia').onsubmit = async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
+      e.preventDefault(); const fd = new FormData(e.target);
       try {
         await api(`/api/planejamentos/${fd.get('origem')}/copy`, { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), ano: Number(fd.get('ano')) }) });
         closeModal(); render();
@@ -106,228 +73,48 @@ async function renderPlanejamentos() {
 }
 
 async function renderDetalhe(id) {
-  app.innerHTML = '<div class="card"><div class="state-box">Carregando modelos...</div></div>';
-
-  let plan;
-  try {
-    plan = await api(`/api/planejamentos/${id}`);
-  } catch (err) {
-    app.innerHTML = `<div class="card"><div class="state-box error">Erro ao carregar planejamento: ${err.message}</div></div>`;
-    return;
-  }
-
-  const state = { items: [], q: '', tipo: '' };
-
-  function filteredItems() {
-    return state.items.filter((m) => {
-      const passName = !state.q || m.nome.toLowerCase().includes(state.q.toLowerCase());
-      const passTipo = !state.tipo || m.tipo === state.tipo;
-      return passName && passTipo;
-    });
-  }
-
-  function renderTable(errorMsg = null) {
-    const items = filteredItems();
-    const countLabel = `${items.length} ${items.length === 1 ? 'modelo' : 'modelos'}`;
-    app.innerHTML = `
-      <section class="page-header">
-        <div>
-          <h1 class="page-title">${plan.nome} (${plan.ano})</h1>
-          <div class="page-subtitle">
-            <span class="status ${plan.status}">${plan.status}</span>
-            <span>Atualizado em ${new Date(plan.atualizadoEm).toLocaleString('pt-BR')}</span>
-          </div>
-        </div>
-        <div class="header-actions">
-          <button class="primary" id="novoModelo">Novo Modelo</button>
-          <div class="dropdown">
-            <button id="globalMenuBtn" aria-label="Mais ações">...</button>
-            <div class="menu" id="globalMenu">
-              <button type="button">Copiar Estrutura (placeholder)</button>
-              <button type="button">Configurações (placeholder)</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="table-toolbar">
-          <input id="searchModelo" placeholder="Buscar modelos..." value="${state.q}">
-          <select id="tipoModelo">
-            <option value="">Todos os tipos</option>
-            <option value="receita" ${state.tipo === 'receita' ? 'selected' : ''}>receita</option>
-            <option value="despesa" ${state.tipo === 'despesa' ? 'selected' : ''}>despesa</option>
-            <option value="driver" ${state.tipo === 'driver' ? 'selected' : ''}>driver</option>
-            <option value="outro" ${state.tipo === 'outro' ? 'selected' : ''}>outro</option>
-          </select>
-          <div class="item-count">${countLabel}</div>
-        </div>
-
-        ${errorMsg ? `<div class="state-box error">${errorMsg}</div>` : ''}
-        ${!errorMsg && items.length === 0 ? '<div class="state-box">Nenhum modelo encontrado para os filtros aplicados.</div>' : ''}
-
-        ${!errorMsg && items.length ? `
-          <table class="table">
-            <thead><tr><th>Nome</th><th>Tipo</th><th>Atualizado</th><th style="width:220px">Ações</th></tr></thead>
-            <tbody>
-              ${items.map(m => `
-                <tr>
-                  <td>
-                    <div class="model-name">${m.nome}</div>
-                    <div class="muted">${m.descricao || 'Sem descrição'}</div>
-                  </td>
-                  <td><span class="muted">${m.tipo}</span></td>
-                  <td><span class="muted">${new Date(m.atualizadoEm).toLocaleString('pt-BR')}</span></td>
-                  <td>
-                    <div class="actions">
-                      <a href="/planejamentos/${id}/modelos/${m.id}/preencher" data-link><button class="primary small">Preencher</button></a>
-                      <div class="dropdown">
-                        <button class="small" data-row-menu="${m.id}">...</button>
-                        <div class="menu" id="rowMenu-${m.id}">
-                          <a href="/planejamentos/${id}/modelos/${m.id}/editar" data-link>Editar estrutura</a>
-                          <button type="button" data-dup-modelo="${m.id}">Duplicar (placeholder)</button>
-                          <button type="button" class="danger-item" data-del-modelo="${m.id}">Excluir</button>
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        ` : ''}
-      </section>
-    `;
-
-    const globalBtn = document.getElementById('globalMenuBtn');
-    const globalMenu = document.getElementById('globalMenu');
-    globalBtn.onclick = (e) => {
-      e.stopPropagation();
-      globalMenu.classList.toggle('open');
-    };
-
-    document.getElementById('searchModelo').oninput = (e) => {
-      state.q = e.target.value;
-      renderTable(errorMsg);
-    };
-    document.getElementById('tipoModelo').onchange = (e) => {
-      state.tipo = e.target.value;
-      renderTable(errorMsg);
-    };
-
-    app.querySelectorAll('[data-row-menu]').forEach(btn => {
-      btn.onclick = (e) => {
-        e.stopPropagation();
-        document.querySelectorAll('.menu.open').forEach(menu => menu.classList.remove('open'));
-        const menu = document.getElementById(`rowMenu-${btn.dataset.rowMenu}`);
-        menu.classList.toggle('open');
-      };
-    });
-
-    app.querySelectorAll('[data-dup-modelo]').forEach(btn => btn.onclick = () => alert('Duplicar modelo (placeholder nesta fase).'));
-    app.querySelectorAll('[data-del-modelo]').forEach(btn => btn.onclick = async () => {
-      const ok = confirm('Tem certeza que deseja excluir este modelo?');
-      if (!ok) return;
+  app.innerHTML = '<div class="card">Carregando...</div>';
+  const [plan, modelosRes] = await Promise.all([
+    api(`/api/planejamentos/${id}`),
+    api(`/api/planejamentos/${id}/modelos?page=1&pageSize=100`)
+  ]);
+  const items = modelosRes.items;
+  app.innerHTML = `
+    <section class="page-header"><div><h1 class="page-title">${plan.nome} (${plan.ano})</h1><div class="page-subtitle"><span class="status ${plan.status}">${plan.status}</span><span>Atualizado em ${new Date(plan.atualizadoEm).toLocaleString('pt-BR')}</span></div></div><div class="header-actions"><button class="primary" id="novoModelo">Novo Modelo</button></div></section>
+    <section class="card"><table class="table"><thead><tr><th>Nome</th><th>Tipo</th><th>Atualizado</th><th>Ações</th></tr></thead><tbody>${items.length ? items.map(m => `<tr><td>${m.nome}</td><td>${m.tipo}</td><td>${new Date(m.atualizadoEm).toLocaleString('pt-BR')}</td><td class="actions"><a href="/planejamentos/${id}/modelos/${m.id}/editar" data-link>Editar Estrutura</a><a href="/planejamentos/${id}/modelos/${m.id}/preencher" data-link>Preencher</a><button data-del-modelo="${m.id}">Excluir</button></td></tr>`).join('') : '<tr><td colspan="4">Sem modelos.</td></tr>'}</tbody></table></section>
+  `;
+  document.getElementById('novoModelo').onclick = () => {
+    openModal(`<form id="formModel" class="grid"><h3>Novo Modelo</h3><label>Nome <input name="nome" required></label><label>Tipo <select name="tipo"><option>receita</option><option>despesa</option><option>driver</option><option>outro</option></select></label><label>Descrição <textarea name="descricao"></textarea></label><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div></form>`);
+    document.getElementById('cancel').onclick = closeModal;
+    document.getElementById('formModel').onsubmit = async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
       try {
-        await api(`/api/modelos/${btn.dataset.delModelo}`, { method: 'DELETE' });
-        await loadModelos();
-      } catch (err) {
-        renderTable(err.message);
-      }
-    });
-
-    document.addEventListener('click', () => document.querySelectorAll('.menu.open').forEach(menu => menu.classList.remove('open')), { once: true });
-
-    document.getElementById('novoModelo').onclick = () => {
-      openModal(`
-        <form id="formModel" class="grid" method="dialog">
-          <h3>Novo Modelo</h3>
-          <label>Nome <input name="nome" required></label>
-          <label>Tipo <select name="tipo"><option>receita</option><option>despesa</option><option>driver</option><option>outro</option></select></label>
-          <label>Descrição <textarea name="descricao"></textarea></label>
-          <div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div class="error" id="err"></div>
-        </form>
-      `);
-      document.getElementById('cancel').onclick = closeModal;
-      document.getElementById('formModel').onsubmit = async (e) => {
-        e.preventDefault();
-        const fd = new FormData(e.target);
-        try {
-          await api(`/api/planejamentos/${id}/modelos`, { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), tipo: fd.get('tipo'), descricao: fd.get('descricao') }) });
-          closeModal();
-          await loadModelos();
-        } catch (err) { document.getElementById('err').textContent = err.message; }
-      };
+        await api(`/api/planejamentos/${id}/modelos`, { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), tipo: fd.get('tipo'), descricao: fd.get('descricao') }) });
+        closeModal(); render();
+      } catch (err) { document.getElementById('err').textContent = err.message; }
     };
-  }
-
-  async function loadModelos() {
-    app.innerHTML = `
-      <section class="page-header">
-        <div>
-          <h1 class="page-title">${plan.nome} (${plan.ano})</h1>
-          <div class="page-subtitle"><span class="status ${plan.status}">${plan.status}</span><span>Atualizado em ${new Date(plan.atualizadoEm).toLocaleString('pt-BR')}</span></div>
-        </div>
-      </section>
-      <section class="card"><div class="state-box">Carregando modelos...</div></section>
-    `;
-    try {
-      const { items } = await api(`/api/planejamentos/${id}/modelos?page=1&pageSize=100`);
-      state.items = items;
-      renderTable();
-    } catch (err) {
-      renderTable(`Erro ao carregar modelos: ${err.message}`);
-    }
-  }
-
-  await loadModelos();
+  };
+  app.querySelectorAll('[data-del-modelo]').forEach(btn => btn.onclick = async () => {
+    if (!confirm('Excluir modelo?')) return;
+    await api(`/api/modelos/${btn.dataset.delModelo}`, { method: 'DELETE' });
+    render();
+  });
 }
 
-
 async function renderEditor(planId, modeloId) {
-  const [linhasRes, contas] = await Promise.all([
-    api(`/api/modelos/${modeloId}/linhas?page=1&pageSize=200`),
-    api('/api/contas-contabeis')
-  ]);
+  const [linhasRes, contas] = await Promise.all([api(`/api/modelos/${modeloId}/linhas?page=1&pageSize=200`), api('/api/contas-contabeis')]);
   const linhas = linhasRes.items;
   const contaLabel = Object.fromEntries(contas.map(c => [c.id, `${c.codigo} - ${c.nome}`]));
-  app.innerHTML = `
-    <div class="card"><h2>Editor de Estrutura</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div>
-    <div class="card"><button class="primary" id="addLinha">Adicionar Linha</button></div>
-    <table class="table"><thead><tr><th>Ordem</th><th>Nome</th><th>Tipo</th><th>Formato</th><th>Conta</th><th>Fórmula</th><th>Ações</th></tr></thead>
-    <tbody>${linhas.map((l, idx) => `<tr>
-      <td>${l.ordem}</td><td>${l.codigo} - ${l.nomeLinha}</td><td>${l.tipoLinha}</td><td>${l.formato}</td><td>${contaLabel[l.contaContabilId] || '-'}</td><td>${l.formula || ''}</td>
-      <td class="actions">
-        <button data-move="up" data-id="${l.id}" ${idx===0?'disabled':''}>↑</button>
-        <button data-move="down" data-id="${l.id}" ${idx===linhas.length-1?'disabled':''}>↓</button>
-        <button data-edit="${l.id}">Editar</button>
-        <button data-del="${l.id}">Excluir</button>
-      </td>
-    </tr>`).join('')}</tbody></table>
-  `;
+  app.innerHTML = `<div class="card"><h2>Editor de Estrutura</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div><div class="card"><button class="primary" id="addLinha">Adicionar Linha</button></div><table class="table"><thead><tr><th>Ordem</th><th>Nome</th><th>Tipo</th><th>Formato</th><th>Conta</th><th>Fórmula</th><th>Ações</th></tr></thead><tbody>${linhas.map((l, idx) => `<tr><td>${l.ordem}</td><td>${l.codigo} - ${l.nomeLinha}</td><td>${l.tipoLinha}</td><td>${l.formato}</td><td>${contaLabel[l.contaContabilId] || '-'}</td><td>${l.formula || ''}</td><td class="actions"><button data-move="up" data-id="${l.id}" ${idx===0?'disabled':''}>↑</button><button data-move="down" data-id="${l.id}" ${idx===linhas.length-1?'disabled':''}>↓</button><button data-edit="${l.id}">Editar</button><button data-del="${l.id}">Excluir</button></td></tr>`).join('')}</tbody></table>`;
 
   async function openLinhaForm(existing) {
     const defaultCode = `L${String(linhas.length + 1).padStart(3, '0')}`;
-    openModal(`
-      <form id="linhaForm" class="grid" method="dialog">
-        <h3>${existing ? 'Editar' : 'Adicionar'} Linha</h3>
-        <label>Código <input name="codigo" value="${existing?.codigo || defaultCode}" required></label>
-        <label>Nome da linha <input name="nomeLinha" value="${existing?.nomeLinha || ''}" required></label>
-        <label>Tipo <select name="tipoLinha"><option ${existing?.tipoLinha==='input'?'selected':''}>input</option><option ${existing?.tipoLinha==='formula'?'selected':''}>formula</option><option ${existing?.tipoLinha==='header'?'selected':''}>header</option></select></label>
-        <label>Formato <select name="formato"><option ${existing?.formato==='moeda'?'selected':''}>moeda</option><option ${existing?.formato==='numero'?'selected':''}>numero</option><option ${existing?.formato==='percentual'?'selected':''}>percentual</option><option ${existing?.formato==='texto'?'selected':''}>texto</option></select></label>
-        <label>Conta contábil <select name="contaContabilId"><option value="">-</option>${contas.map(c=>`<option value="${c.id}" ${Number(existing?.contaContabilId)===c.id?'selected':''}>${c.codigo} - ${c.nome}</option>`).join('')}</select></label>
-        <label>Fórmula <input name="formula" value="${existing?.formula || ''}" placeholder="Ex.: L001 + L002"></label>
-        <div class="small">Referências por código (L001). Operadores + - * /, parênteses e SOMA(...) / SOMAR(...)</div>
-        <div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div>
-      </form>`);
+    openModal(`<form id="linhaForm" class="grid"><h3>${existing ? 'Editar' : 'Adicionar'} Linha</h3><label>Código <input name="codigo" value="${existing?.codigo || defaultCode}" required></label><label>Nome da linha <input name="nomeLinha" value="${existing?.nomeLinha || ''}" required></label><label>Tipo <select name="tipoLinha"><option ${existing?.tipoLinha==='input'?'selected':''}>input</option><option ${existing?.tipoLinha==='formula'?'selected':''}>formula</option><option ${existing?.tipoLinha==='header'?'selected':''}>header</option></select></label><label>Formato <select name="formato"><option ${existing?.formato==='moeda'?'selected':''}>moeda</option><option ${existing?.formato==='numero'?'selected':''}>numero</option><option ${existing?.formato==='percentual'?'selected':''}>percentual</option><option ${existing?.formato==='texto'?'selected':''}>texto</option></select></label><label>Conta contábil <select name="contaContabilId"><option value="">-</option>${contas.map(c=>`<option value="${c.id}" ${Number(existing?.contaContabilId)===c.id?'selected':''}>${c.codigo} - ${c.nome}</option>`).join('')}</select></label><label>Fórmula <input name="formula" value="${existing?.formula || ''}" placeholder="Ex.: L001 + L002"></label><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div></form>`);
     document.getElementById('cancel').onclick = closeModal;
     document.getElementById('linhaForm').onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const payload = {
-        codigo: fd.get('codigo'), nomeLinha: fd.get('nomeLinha'), tipoLinha: fd.get('tipoLinha'), formato: fd.get('formato'),
-        contaContabilId: fd.get('contaContabilId') || null, formula: fd.get('formula') || null
-      };
+      const payload = { codigo: fd.get('codigo'), nomeLinha: fd.get('nomeLinha'), tipoLinha: fd.get('tipoLinha'), formato: fd.get('formato'), contaContabilId: fd.get('contaContabilId') || null, formula: fd.get('formula') || null };
       try {
         if (existing) await api(`/api/linhas/${existing.id}`, { method: 'PUT', body: JSON.stringify(payload) });
         else await api(`/api/modelos/${modeloId}/linhas`, { method: 'POST', body: JSON.stringify(payload) });
@@ -350,88 +137,125 @@ async function renderEditor(planId, modeloId) {
 }
 
 async function renderPreencher(planId, modeloId) {
-  const [plan, ccs, linhasRes] = await Promise.all([
-    api(`/api/planejamentos/${planId}`),
-    api('/api/centros-custo'),
-    api(`/api/modelos/${modeloId}/linhas?page=1&pageSize=200`)
-  ]);
+  const [plan, ccs] = await Promise.all([api(`/api/planejamentos/${planId}`), api('/api/my-cost-centers')]);
   const ano = Number(plan.ano);
   let centroCustoId = ccs[0]?.id;
 
   async function draw() {
+    if (!centroCustoId) {
+      app.innerHTML = '<div class="card"><div class="state-box error">Você não possui Centro de Custo vinculado.</div></div>';
+      return;
+    }
     const data = await api(`/api/modelos/${modeloId}/valores?centroCustoId=${centroCustoId}&ano=${ano}`);
-    const valMap = {};
-    data.valores.forEach(v => valMap[`${v.linhaId}-${v.mes}`] = v.valor);
-
-    app.innerHTML = `
-      <div class="card"><h2>Preenchimento Mensal</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div>
-      <div class="card"><label>Centro de Custo
-        <select id="ccSel">${ccs.map(c => `<option value="${c.id}" ${c.id===centroCustoId?'selected':''}>${c.nome}</option>`).join('')}</select>
-      </label></div>
-      <div class="card" style="overflow:auto">
-      <table class="table" id="sheet"><thead><tr><th>Linha</th>${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead>
-      <tbody>
-      ${data.linhas.map(l => {
-        const cls = l.tipoLinha === 'header' ? 'header-row' : '';
-        const cells = Array.from({ length: 12 }, (_, i) => {
-          const val = Number(valMap[`${l.id}-${i+1}`] ?? 0);
-          if (l.tipoLinha === 'input') return `<td><input class="cell-input" data-linha="${l.id}" data-mes="${i+1}" value="${val}"></td>`;
-          return `<td>${val.toFixed(2)}</td>`;
-        }).join('');
-        const total = Array.from({ length: 12 }, (_, i) => Number(valMap[`${l.id}-${i+1}`] ?? 0)).reduce((a,b)=>a+b,0);
-        return `<tr class="${cls}"><td>${l.codigo} - ${l.nomeLinha}</td>${cells}<td>${total.toFixed(2)}</td></tr>`;
-      }).join('')}
-      </tbody></table></div>
-    `;
+    const valMap = {}; data.valores.forEach(v => valMap[`${v.linhaId}-${v.mes}`] = v.valor);
+    app.innerHTML = `<div class="card"><h2>Preenchimento Mensal</h2><a href="/planejamentos/${planId}" data-link>Voltar</a></div><div class="card"><label>Centro de Custo ativo<select id="ccSel">${ccs.map(c => `<option value="${c.id}" ${c.id===centroCustoId?'selected':''}>${c.nome}</option>`).join('')}</select></label></div><div class="card" style="overflow:auto"><table class="table"><thead><tr><th>Linha</th>${['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'].map(m=>`<th>${m}</th>`).join('')}<th>Total</th></tr></thead><tbody>${data.linhas.map(l => {
+      const cls = l.tipoLinha === 'header' ? 'header-row' : '';
+      const cells = Array.from({ length: 12 }, (_, i) => {
+        const val = Number(valMap[`${l.id}-${i+1}`] ?? 0);
+        return l.tipoLinha === 'input' ? `<td><input class="cell-input" data-linha="${l.id}" data-mes="${i+1}" value="${val}"></td>` : `<td>${val.toFixed(2)}</td>`;
+      }).join('');
+      const total = Array.from({ length: 12 }, (_, i) => Number(valMap[`${l.id}-${i+1}`] ?? 0)).reduce((a,b)=>a+b,0);
+      return `<tr class="${cls}"><td>${l.codigo} - ${l.nomeLinha}</td>${cells}<td>${total.toFixed(2)}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
 
     document.getElementById('ccSel').onchange = (e) => { centroCustoId = Number(e.target.value); draw(); };
-
     app.querySelectorAll('.cell-input').forEach(input => {
       input.onchange = async () => {
         await api(`/api/modelos/${modeloId}/valores/upsert`, { method: 'POST', body: JSON.stringify({ ano, centroCustoId, updates: [{ linhaId: Number(input.dataset.linha), mes: Number(input.dataset.mes), valor: Number(input.value || 0) }] }) });
         draw();
-      };
-
-      input.oncontextmenu = (e) => {
-        e.preventDefault();
-        document.querySelector('.context-menu')?.remove();
-        const menu = document.createElement('div');
-        menu.className = 'context-menu';
-        menu.style.left = `${e.clientX}px`;
-        menu.style.top = `${e.clientY}px`;
-        menu.innerHTML = '<button id="replicar">Replicar para os meses à frente</button>';
-        document.body.appendChild(menu);
-        document.getElementById('replicar').onclick = () => {
-          menu.remove();
-          openModal(`
-            <form id="replicaForm" class="grid" method="dialog">
-              <h3>Replicar valor</h3>
-              <label>Mês final <select name="mesFinal">${Array.from({length:12},(_,i)=>`<option value="${i+1}" ${i===11?'selected':''}>${i+1}</option>`)}</select></label>
-              <label><input type="checkbox" checked disabled> Replicar apenas valor</label>
-              <div class="actions"><button class="primary">Aplicar</button><button type="button" id="cancel">Cancelar</button></div>
-            </form>
-          `);
-          document.getElementById('cancel').onclick = closeModal;
-          document.getElementById('replicaForm').onsubmit = async (ev) => {
-            ev.preventDefault();
-            const fd = new FormData(ev.target);
-            const mesAtual = Number(input.dataset.mes);
-            const mesFinal = Number(fd.get('mesFinal'));
-            const ups = [];
-            for (let m = mesAtual + 1; m <= mesFinal; m++) ups.push({ linhaId: Number(input.dataset.linha), mes: m, valor: Number(input.value || 0) });
-            if (ups.length) await api(`/api/modelos/${modeloId}/valores/upsert`, { method: 'POST', body: JSON.stringify({ ano, centroCustoId, updates: ups }) });
-            closeModal(); draw();
-          };
-        };
-        document.addEventListener('click', () => menu.remove(), { once: true });
       };
     });
   }
   draw();
 }
 
-function renderParametros() {
-  app.innerHTML = '<div class="card"><h2>Parâmetros</h2><p>Placeholder nesta entrega. Cadastros serão implementados depois.</p></div>';
+function renderParametrosShell() {
+  const tab = new URLSearchParams(location.search).get('tab') || 'usuarios';
+  app.innerHTML = `
+    <section class="page-header"><div><h1 class="page-title">Parâmetros</h1><div class="page-subtitle">Controle de acesso (RBAC + escopo por Centro de Custo)</div></div></section>
+    <div class="card"><div class="actions"><a href="/parametros?tab=usuarios" data-link><button ${tab==='usuarios'?'class="primary"':''}>Usuários</button></a><a href="/parametros?tab=acessos" data-link><button ${tab==='acessos'?'class="primary"':''}>Controles de Acessos</button></a><a href="/parametros?tab=cc" data-link><button ${tab==='cc'?'class="primary"':''}>Centros de Custo</button></a><a href="/parametros?tab=vinculos" data-link><button ${tab==='vinculos'?'class="primary"':''}>Vínculos Usuário x CC</button></a></div></div>
+    <div id="paramContent"></div>`;
+  return tab;
+}
+
+async function renderUsuarios() {
+  const tab = renderParametrosShell(); if (tab !== 'usuarios') return;
+  const { items } = await api('/api/parametros/usuarios?page=1&pageSize=100');
+  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="table-toolbar"><input id="buscaUser" placeholder="Buscar usuários..."><div class="item-count">${items.length} usuários</div><button class="primary" id="novoUser">Novo</button></div><table class="table"><thead><tr><th>Nome</th><th>Email</th><th>Ações</th></tr></thead><tbody id="userRows"></tbody></table></div>`;
+  const renderRows = (q='') => {
+    const rows = items.filter(u => !q || `${u.nome} ${u.email}`.toLowerCase().includes(q.toLowerCase()));
+    document.getElementById('userRows').innerHTML = rows.length ? rows.map(u => `<tr><td>${u.nome}</td><td>${u.email}</td><td class="actions"><button data-edit="${u.id}">Editar</button><button class="destructive" data-del="${u.id}">Excluir</button></td></tr>`).join('') : '<tr><td colspan="3">Sem usuários.</td></tr>';
+    document.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openUserForm(items.find(u => u.id === Number(btn.dataset.edit))));
+    document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => { if(confirm('Excluir usuário?')) { await api(`/api/parametros/usuarios/${btn.dataset.del}`, { method: 'DELETE' }); render(); }});
+  };
+  document.getElementById('buscaUser').oninput = (e) => renderRows(e.target.value);
+  renderRows();
+  document.getElementById('novoUser').onclick = () => openUserForm();
+
+  function openUserForm(u) {
+    openModal(`<form id="fUser" class="grid"><h3>${u?'Editar':'Novo'} Usuário</h3><label>Nome <input name="nome" value="${u?.nome||''}" required></label><label>Email <input name="email" value="${u?.email||''}" required></label><div class="actions"><button class="primary">Salvar</button><button type="button" id="cancel">Cancelar</button></div><div id="err" class="error"></div></form>`);
+    document.getElementById('cancel').onclick = closeModal;
+    document.getElementById('fUser').onsubmit = async (e) => {
+      e.preventDefault(); const fd = new FormData(e.target);
+      try {
+        if (u) await api(`/api/parametros/usuarios/${u.id}`, { method: 'PUT', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
+        else await api('/api/parametros/usuarios', { method: 'POST', body: JSON.stringify({ nome: fd.get('nome'), email: fd.get('email') }) });
+        closeModal(); render();
+      } catch (err) { document.getElementById('err').textContent = err.message; }
+    };
+  }
+}
+
+async function renderAcessos() {
+  const tab = renderParametrosShell(); if (tab !== 'acessos') return;
+  const [roles, perms, rolePerms, users, userRoles] = await Promise.all([
+    api('/api/parametros/roles'), api('/api/parametros/permissions'), api('/api/parametros/role-permissions'), api('/api/parametros/usuarios?page=1&pageSize=100').then(r=>r.items), api('/api/parametros/user-roles')
+  ]);
+  document.getElementById('paramContent').innerHTML = `
+    <div class="card"><h3>User Roles</h3><div class="actions"><select id="urUser">${users.map(u=>`<option value="${u.id}">${u.nome}</option>`)}</select><select id="urRole">${roles.map(r=>`<option value="${r.id}">${r.name}</option>`)}</select><button class="primary" id="addUr">Vincular</button></div><table class="table"><thead><tr><th>Usuário</th><th>Role</th><th></th></tr></thead><tbody>${userRoles.map(ur=>`<tr><td>${ur.userNome}</td><td>${ur.roleName}</td><td><button class="destructive" data-del-ur='${JSON.stringify({userId:ur.userId,roleId:ur.roleId})}'>Remover</button></td></tr>`).join('')}</tbody></table></div>
+    <div class="card"><h3>Role Permissions</h3><div class="actions"><select id="rpRole">${roles.map(r=>`<option value="${r.id}">${r.name}</option>`)}</select><select id="rpPerm">${perms.map(p=>`<option value="${p.id}">${p.key}</option>`)}</select><button class="primary" id="addRp">Vincular</button></div><table class="table"><thead><tr><th>Role</th><th>Permissão</th><th></th></tr></thead><tbody>${rolePerms.map(rp=>`<tr><td>${rp.roleName}</td><td>${rp.permissionKey}</td><td><button class="destructive" data-del-rp='${JSON.stringify({roleId:rp.roleId,permissionId:rp.permissionId})}'>Remover</button></td></tr>`).join('')}</tbody></table></div>
+  `;
+  document.getElementById('addUr').onclick = async () => { await api('/api/parametros/user-roles', { method:'POST', body: JSON.stringify({ userId:Number(document.getElementById('urUser').value), roleId:Number(document.getElementById('urRole').value) }) }); render(); };
+  document.getElementById('addRp').onclick = async () => { await api('/api/parametros/role-permissions', { method:'POST', body: JSON.stringify({ roleId:Number(document.getElementById('rpRole').value), permissionId:Number(document.getElementById('rpPerm').value) }) }); render(); };
+  document.querySelectorAll('[data-del-ur]').forEach(btn => btn.onclick = async () => { const p = JSON.parse(btn.dataset.delUr); await api('/api/parametros/user-roles', { method:'DELETE', body: JSON.stringify(p) }); render(); });
+  document.querySelectorAll('[data-del-rp]').forEach(btn => btn.onclick = async () => { const p = JSON.parse(btn.dataset.delRp); await api('/api/parametros/role-permissions', { method:'DELETE', body: JSON.stringify(p) }); render(); });
+}
+
+async function renderCC() {
+  const tab = renderParametrosShell(); if (tab !== 'cc') return;
+  const { items } = await api('/api/centros-custo?page=1&pageSize=200');
+  document.getElementById('paramContent').innerHTML = `<div class="card"><div class="actions"><button class="primary" id="novoCc">Novo CC</button></div><table class="table"><thead><tr><th>Nome</th><th>Ações</th></tr></thead><tbody>${items.map(c=>`<tr><td>${c.nome}</td><td class="actions"><button data-edit='${c.id}'>Editar</button><button class="destructive" data-del='${c.id}'>Excluir</button></td></tr>`).join('')}</tbody></table></div>`;
+  document.getElementById('novoCc').onclick = () => openCcForm();
+  document.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openCcForm(items.find(c => c.id===Number(btn.dataset.edit))));
+  document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => { if(confirm('Excluir centro de custo?')) { await api(`/api/centros-custo/${btn.dataset.del}`, { method:'DELETE' }); render(); } });
+
+  function openCcForm(cc){
+    openModal(`<form id='fCc' class='grid'><h3>${cc?'Editar':'Novo'} CC</h3><label>Nome <input name='nome' value='${cc?.nome||''}' required></label><div class='actions'><button class='primary'>Salvar</button><button type='button' id='cancel'>Cancelar</button></div><div id='err' class='error'></div></form>`);
+    document.getElementById('cancel').onclick = closeModal;
+    document.getElementById('fCc').onsubmit = async (e) => { e.preventDefault(); const fd = new FormData(e.target); try { if (cc) await api(`/api/centros-custo/${cc.id}`, { method:'PUT', body: JSON.stringify({ nome: fd.get('nome') }) }); else await api('/api/centros-custo', { method:'POST', body: JSON.stringify({ nome: fd.get('nome') }) }); closeModal(); render(); } catch(err){ document.getElementById('err').textContent = err.message; } };
+  }
+}
+
+async function renderVinculos() {
+  const tab = renderParametrosShell(); if (tab !== 'vinculos') return;
+  const [vinc, users, ccs] = await Promise.all([
+    api('/api/parametros/user-cost-centers'), api('/api/parametros/usuarios?page=1&pageSize=100').then(r=>r.items), api('/api/centros-custo?page=1&pageSize=200').then(r=>r.items)
+  ]);
+  document.getElementById('paramContent').innerHTML = `<div class='card'><div class='actions'><select id='vUser'>${users.map(u=>`<option value='${u.id}'>${u.nome}</option>`)}</select><select id='vCc'>${ccs.map(c=>`<option value='${c.id}'>${c.nome}</option>`)}</select><select id='vType'><option>GESTOR</option><option>OPERADOR</option></select><button class='primary' id='addV'>Vincular</button></div><table class='table'><thead><tr><th>Usuário</th><th>CC</th><th>Tipo</th><th></th></tr></thead><tbody>${vinc.map(v=>`<tr><td>${v.userNome}</td><td>${v.costCenterNome}</td><td>${v.linkType}</td><td><button class='destructive' data-del='${JSON.stringify({userId:v.userId,costCenterId:v.costCenterId})}'>Remover</button></td></tr>`).join('')}</tbody></table></div>`;
+  document.getElementById('addV').onclick = async () => {
+    await api('/api/parametros/user-cost-centers', { method:'POST', body: JSON.stringify({ userId:Number(document.getElementById('vUser').value), costCenterId:Number(document.getElementById('vCc').value), linkType: document.getElementById('vType').value }) });
+    render();
+  };
+  document.querySelectorAll('[data-del]').forEach(btn => btn.onclick = async () => { const d = JSON.parse(btn.dataset.del); await api('/api/parametros/user-cost-centers', { method:'DELETE', body: JSON.stringify(d) }); render(); });
+}
+
+async function renderParametros() {
+  const tab = new URLSearchParams(location.search).get('tab') || 'usuarios';
+  if (tab === 'usuarios') return renderUsuarios();
+  if (tab === 'acessos') return renderAcessos();
+  if (tab === 'cc') return renderCC();
+  if (tab === 'vinculos') return renderVinculos();
+  return renderUsuarios();
 }
 
 async function render() {
@@ -442,16 +266,13 @@ async function render() {
   try {
     if (path === '/' || path === '/planejamentos') return renderPlanejamentos();
     if (path === '/parametros') return renderParametros();
-    let m = path.match(/^\/planejamentos\/(\d+)$/);
-    if (m) return renderDetalhe(m[1]);
-    m = path.match(/^\/planejamentos\/(\d+)\/modelos\/(\d+)\/editar$/);
-    if (m) return renderEditor(m[1], m[2]);
-    m = path.match(/^\/planejamentos\/(\d+)\/modelos\/(\d+)\/preencher$/);
-    if (m) return renderPreencher(m[1], m[2]);
+    let m = path.match(/^\/planejamentos\/(\d+)$/); if (m) return renderDetalhe(m[1]);
+    m = path.match(/^\/planejamentos\/(\d+)\/modelos\/(\d+)\/editar$/); if (m) return renderEditor(m[1], m[2]);
+    m = path.match(/^\/planejamentos\/(\d+)\/modelos\/(\d+)\/preencher$/); if (m) return renderPreencher(m[1], m[2]);
     app.innerHTML = '<div class="card">Página não encontrada.</div>';
   } catch (err) {
-    app.innerHTML = `<div class="card">Erro: ${err.message}</div>`;
+    app.innerHTML = `<div class="card"><div class="state-box error">${err.message}</div></div>`;
   }
 }
 
-render();
+loadSessionUsers().then(render);

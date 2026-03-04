@@ -1,6 +1,6 @@
 # Software-de-Or-amento
 
-Implementação MVP da aba **Planejamento** com persistência em SQLite, API REST e frontend ERP-like em páginas limpas com tabelas, ações e modais.
+Implementação da aba **Planejamento** com persistência SQLite, API REST e frontend ERP-like.
 
 ## Como rodar
 
@@ -10,81 +10,81 @@ python app.py
 
 Acesse `http://localhost:3000`.
 
+## Autenticação mock (para testes)
+
+O frontend possui seletor de **Usuário ativo** na sidebar e envia `X-User-Id` em todas as requisições.
+
+Seeds de usuários:
+- Ana Diretoria (`diretoria@coop.local`) — acesso global
+- Bruno Gestor (`gestor@coop.local`) — 2 centros de custo
+- Carla Operadora (`operador@coop.local`) — 1 centro de custo
+
 ## Navegação
 
 - `/planejamentos` — lista, criação e cópia de planejamento
 - `/planejamentos/:id` — detalhe com modelos
 - `/planejamentos/:id/modelos/:modeloId/editar` — editor de estrutura do modelo
 - `/planejamentos/:id/modelos/:modeloId/preencher` — preenchimento mensal
-- `/parametros` — placeholder sem CRUD
+- `/parametros?tab=usuarios|acessos|cc|vinculos` — módulo Parâmetros (RBAC)
 
-## Entidades e regras implementadas
+## Controle de Acesso (RBAC + escopo por CC)
 
-- Planejamento (`draft|aberto|fechado`)
-- Modelo por planejamento
-- Linhas do modelo (`input|formula|header`) com fórmula simples por código (`L001` etc.)
-- Valores mensais por linha, mês e centro de custo
-- Seeds fixas:
-  - 3 centros de custo (Administração, Armazém, Comercial)
-  - 10 contas contábeis mock
+### Tabelas
+- `roles` (`OPERADOR|GESTOR|DIRETORIA`)
+- `permissions` (ex.: `planning.read`, `planning.fill.write`)
+- `role_permissions`
+- `user_roles`
+- `user_cost_centers` (`linkType`: `GESTOR|OPERADOR`)
 
-### Fórmulas (MVP)
+### Regras
+- Deny-by-default no backend (sem permissão explícita = 403)
+- Rotas de Planejamento exigem permissões `planning.*`
+- Rotas de Parâmetros exigem `parametros.*`
+- Rotas com `centroCustoId` validam vínculo do usuário (`user_cost_centers`)
+- Usuário com role `DIRETORIA` tem acesso global de CC
 
-- Operadores: `+ - * /`
-- Parênteses
-- Alias `SOMA(a,b,c)` e `SOMAR(a,b,c)`
-- Referência por **código da linha** (`L001`)
-- Validações:
-  - auto-referência bloqueada
-  - referência inválida bloqueada
-  - ciclo entre fórmulas bloqueado
+## Endpoints principais
 
-## Endpoints REST
+### Sessão mock
+- `GET /api/session/users`
+- `GET /api/session/me`
 
-### Planejamentos
-
+### Planejamento
 - `GET /api/planejamentos?page&pageSize`
 - `POST /api/planejamentos`
 - `GET /api/planejamentos/:id`
-- `POST /api/planejamentos/:id/copy` (copia modelos + linhas, sem valores)
-
-### Modelos
-
+- `POST /api/planejamentos/:id/copy`
 - `GET /api/planejamentos/:id/modelos?page&pageSize`
 - `POST /api/planejamentos/:id/modelos`
 - `PUT /api/modelos/:modeloId`
 - `DELETE /api/modelos/:modeloId`
-
-### Linhas de modelo
-
 - `GET /api/modelos/:modeloId/linhas?page&pageSize`
 - `POST /api/modelos/:modeloId/linhas`
 - `PUT /api/linhas/:id`
 - `POST /api/modelos/:modeloId/linhas/reorder`
 - `DELETE /api/linhas/:id`
-
-### Valores mensais
-
+- `GET /api/my-cost-centers`
 - `GET /api/modelos/:modeloId/valores?centroCustoId=...&ano=YYYY`
-- `POST /api/modelos/:modeloId/valores/upsert` (requer `ano`; salva inputs manuais, recalcula fórmulas em ordem topológica e persiste calculados)
+- `POST /api/modelos/:modeloId/valores/upsert`
 
-### Mocks de parâmetros
+### Parâmetros
+- `GET/POST /api/parametros/usuarios`
+- `PUT/DELETE /api/parametros/usuarios/:id`
+- `GET/POST /api/centros-custo`
+- `PUT/DELETE /api/centros-custo/:id`
+- `GET /api/parametros/roles`
+- `GET /api/parametros/permissions`
+- `GET/POST/DELETE /api/parametros/user-roles`
+- `GET/POST/DELETE /api/parametros/role-permissions`
+- `GET/POST/DELETE /api/parametros/user-cost-centers`
 
-- `GET /api/centros-custo`
-- `GET /api/contas-contabeis`
+## Teste manual solicitado
 
-## Passo a passo de teste manual
-
-1. Criar planejamento em `/planejamentos` via **Novo Planejamento**.
-2. Entrar no planejamento e criar modelo em **Novo Modelo**.
-3. Abrir **Editar Estrutura**:
-   - criar `L001` (input), `L002` (input), `L003` (formula `L001 + L002`)
-   - mover linhas para validar reorder
-4. Abrir **Preencher**:
-   - informar Jan/Fev nas linhas input
-   - conferir cálculo automático na linha fórmula
-   - clicar com botão direito em célula input e usar **Replicar para os meses à frente** até Dez
-5. Voltar à lista e usar **Copiar de...** para gerar novo planejamento
-   - conferir que modelos/linhas foram copiados
-   - conferir que não há valores mensais copiados
-6. Trocar Centro de Custo no preenchimento e validar contexto de valores por CC.
+1. Logar como **gestor** (Bruno Gestor) e abrir preenchimento:
+   - deve listar apenas "Meus CCs" (2 CCs) e permitir alternar.
+2. Logar como **operador** (Carla Operadora):
+   - deve listar somente 1 CC.
+3. Logar como **diretoria** (Ana Diretoria):
+   - deve listar todos os 6 CCs.
+4. Tentar acessar CC não vinculado:
+   - backend deve responder `403`.
